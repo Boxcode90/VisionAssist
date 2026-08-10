@@ -4,29 +4,39 @@ import gc
 from ultralytics import YOLO
 
 class ObjectDetector:
-    def __init__(self, model_path='yolov8n.pt', device='cpu', conf_threshold=0.5, input_size=640):
+    def __init__(self, model_path='yolov8n.pt', device='cpu', conf_threshold=0.4, input_size=320):
+        """
+        Optimized for mobile/CPU:
+        - input_size=320 (instead of 640) -> 4x faster
+        - conf_threshold=0.4 (slightly lower to catch obstacles)
+        """
         self.model = YOLO(model_path)
+        self.device = device
         self.model.to(device)
         self.conf_threshold = conf_threshold
         self.input_size = input_size
         self.names = self.model.names
 
+        # Enable half-precision (FP16) for GPU speed boost
+        if device == 'cuda':
+            self.model.model.half()
+            print("[INFO] FP16 enabled for GPU acceleration.")
+
     def detect(self, frame, use_tracking=False):
-        # Resize frame to reduce memory usage
         h, w = frame.shape[:2]
-        if w != self.input_size or h != self.input_size:
-            frame_resized = cv2.resize(frame, (self.input_size, self.input_size))
-        else:
-            frame_resized = frame
+        
+        # Resize to 320x320 for speed
+        frame_resized = cv2.resize(frame, (self.input_size, self.input_size))
 
         if use_tracking:
             results = self.model.track(frame_resized, conf=self.conf_threshold, 
-                                       persist=True, verbose=False)
+                                       persist=True, verbose=False, device=self.device)
         else:
-            results = self.model(frame_resized, conf=self.conf_threshold, verbose=False)
+            results = self.model(frame_resized, conf=self.conf_threshold, 
+                                 verbose=False, device=self.device)
 
         detections = []
-        annotated_frame = frame.copy()  # we'll draw on original size later
+        annotated_frame = frame.copy()
 
         for r in results:
             boxes = r.boxes
@@ -58,10 +68,11 @@ class ObjectDetector:
 
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(annotated_frame, text, (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        # Clear GPU cache and run garbage collection every call
-        torch.cuda.empty_cache()
+        # Gentle memory cleanup
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         gc.collect()
 
         return detections, annotated_frame
